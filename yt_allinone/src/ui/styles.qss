@@ -1,0 +1,20 @@
+QPushButton#primary {
+    font-weight: 600;
+}
+
+QPushButton#warning {
+}
+
+QPushButton#danger {
+}
+
+QGroupBox::title {
+    font-weight: 600;
+    padding: 4px;
+}
+
+/* Validation states */
+QLineEdit[error="true"] {
+    border: 1px solid #e74c3c;
+}
+

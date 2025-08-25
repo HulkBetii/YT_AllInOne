@@ -38,16 +38,36 @@ class SimpleQueue:
 
 def _progress_hook_factory() -> Callable[[Dict[str, Any]], None]:
     def hook(status: Dict[str, Any]) -> None:
+        downloaded = status.get("downloaded_bytes") or 0
+        total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+        frag_idx = status.get("fragment_index") or 0
+        frag_cnt = status.get("fragment_count") or 0
+        eta = status.get("eta") or 0
+        elapsed = status.get("elapsed") or 0
+        try:
+            if total:
+                percent = int(int(downloaded) * 100 / int(total))
+            elif frag_cnt:
+                percent = int(int(frag_idx) * 100 / int(frag_cnt))
+            elif eta:
+                # Approximation using elapsed and ETA
+                percent = int(int(elapsed) * 100 / (int(elapsed) + int(eta))) if (int(elapsed) + int(eta)) > 0 else 0
+            else:
+                percent = 0
+        except Exception:
+            percent = 0
+
         payload = {
             "event": "progress",
             "status": status.get("status"),
-            "downloaded_bytes": status.get("downloaded_bytes"),
-            "total_bytes": status.get("total_bytes") or status.get("total_bytes_estimate"),
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
             "speed": status.get("speed"),
-            "eta": status.get("eta"),
+            "eta": eta,
             "filename": status.get("filename"),
             "frag_index": status.get("fragment_index"),
             "frag_count": status.get("fragment_count"),
+            "percent": percent,
         }
         sys.stdout.write(json.dumps(payload) + "\n")
         sys.stdout.flush()
@@ -213,6 +233,9 @@ class DownloadManager:
                             pass
             self._proc = None
             self._ps = None
+
+    def is_running(self) -> bool:
+        return bool(self._proc and self._proc.poll() is None)
 
 
 if __name__ == "__main__":  # Subprocess entry point
