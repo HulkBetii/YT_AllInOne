@@ -1,0 +1,14 @@
+yt-dlp
+PySide6
+typer
+rich
+pydantic
+pydantic-settings
+loguru
+pytest
+psutil
+requests
+responses
+flake8
+ruff
+
