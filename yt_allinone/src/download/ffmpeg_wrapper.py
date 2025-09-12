@@ -7,7 +7,7 @@ import subprocess
 from typing import Dict, Optional
 
 
-from yt_allinone.src.core.models import DownloadError, ErrorCode
+from ..core.models import DownloadError, ErrorCode
 
 
 class FFmpegError(RuntimeError):

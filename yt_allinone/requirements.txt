@@ -11,4 +11,5 @@ requests
 responses
 flake8
 ruff
+Pillow
 

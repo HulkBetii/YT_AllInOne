@@ -1,5 +1,5 @@
 import pytest
-from yt_allinone.src.core.selector import build_format_selector
+from ..src.core.selector import build_format_selector
 
 
 @pytest.mark.parametrize(

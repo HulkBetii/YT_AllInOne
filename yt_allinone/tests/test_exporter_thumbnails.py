@@ -1,7 +1,7 @@
 import os
 import responses
 
-from yt_allinone.src.core.exporter import download_best_thumbnail
+from ..src.core.exporter import download_best_thumbnail
 
 
 @responses.activate

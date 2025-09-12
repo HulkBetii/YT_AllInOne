@@ -32,14 +32,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction as GuiAction  # noqa: F401 (not used directly; retained for compatibility)
 
-from yt_allinone.src.core.selector import build_format_selector
-from yt_allinone.src.core.filters import is_shorts, is_regular
-from yt_allinone.src.core.exporter import download_best_thumbnail, export_tags
-from yt_allinone.src.core.models import DownloadTask
-from yt_allinone.src.download.ytdlp_wrapper import YtDlpWrapper
-from yt_allinone.src.download.queue import DownloadManager
-from yt_allinone.src.utils.config import get_default_download_dir
-from yt_allinone.src.utils.i18n import tr, set_language, get_language
+from ..core.selector import build_format_selector
+from ..core.filters import is_shorts, is_regular
+from ..core.exporter import download_best_thumbnail, export_tags
+from ..core.models import DownloadTask
+from ..download.ytdlp_wrapper import YtDlpWrapper
+from ..download.queue import DownloadManager
+from ..utils.config import get_default_download_dir
+from ..utils.i18n import tr, set_language, get_language
 
 
 class ProgressSignal(QObject):
@@ -87,36 +87,65 @@ class DownloadThread(QThread):
                 ydl_opts["cookiesfrombrowser"] = (self.cookies_from_browser,)
             wrapper = YtDlpWrapper(options=ydl_opts)
 
-            entries = wrapper.dry_run(self.url, filter_fn=filter_fn, limit=self.limit)
-            self.total_count = len(entries) if entries else 0
+            # Try with cookies first, then without if cookies fail
+            try:
+                entries = wrapper.dry_run(self.url, filter_fn=filter_fn, limit=self.limit, cookies=self.cookies_from_browser)
+            except Exception as exc:
+                if self.cookies_from_browser and "could not copy" in str(exc).lower():
+                    self.signals.message.emit("Không thể truy cập cookies, thử tải không cookies...")
+                    entries = wrapper.dry_run(self.url, filter_fn=filter_fn, limit=self.limit, cookies=None)
+                else:
+                    raise exc
+            if not entries:
+                self.signals.error.emit("Không tìm thấy video nào để tải")
+                return
+                
+            self.total_count = len(entries)
+            self.signals.message.emit(f"Tìm thấy {self.total_count} video để tải")
+            
             if self.thumb:
                 os.makedirs(self.outdir, exist_ok=True)
                 for e in entries:
-                    path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
-                    if path:
-                        dest = os.path.join(self.outdir, f"{e.id}.jpg")
-                        try:
-                            os.replace(path, dest)
-                        except Exception:
-                            pass
+                    try:
+                        path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
+                        if path:
+                            dest = os.path.join(self.outdir, f"{e.id}.jpg")
+                            try:
+                                os.replace(path, dest)
+                                self.signals.message.emit(f"Đã tải thumbnail: {dest}")
+                            except Exception:
+                                pass
+                    except Exception as ex:
+                        self.signals.message.emit(f"Lỗi tải thumbnail cho {e.id}: {ex}")
 
             for e in entries:
-                fmt = build_format_selector(self.quality)
-                task = DownloadTask(url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}", outdir=self.outdir, quality=self.quality, only_audio=self.only_audio, options={"format": fmt})
-                self.signals.message.emit(f"Đang tải: {task.url}")
-                self.manager.start(task)
-                if self.manager._proc:  # noqa: SLF001
-                    self.manager._proc.wait()
-                # update overall after each item finishes
-                self.completed_items += 1
-                if self.total_count:
-                    overall_pct = int(self.completed_items * 100 / self.total_count)
-                    self.signals.progress.emit({"event": "overall", "overall_percent": overall_pct})
                 if self.stop_after_current:
                     break
+                    
+                fmt = build_format_selector(self.quality)
+                task = DownloadTask(url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}", outdir=self.outdir, quality=self.quality, only_audio=self.only_audio, cookies_from_browser=self.cookies_from_browser, options={"format": fmt})
+                self.signals.message.emit(f"Đang tải: {task.url}")
+                
+                try:
+                    self.manager.start(task)
+                    # Wait for the download to complete
+                    while self.manager.is_running():
+                        self.msleep(100)  # Sleep for 100ms to avoid blocking
+                    # update overall after each item finishes
+                    self.completed_items += 1
+                    if self.total_count:
+                        overall_pct = int(self.completed_items * 100 / self.total_count)
+                        self.signals.progress.emit({"event": "overall", "overall_percent": overall_pct})
+                    self.signals.message.emit(f"Hoàn thành tải video {self.completed_items}/{self.total_count}")
+                except Exception as ex:
+                    self.signals.error.emit(f"Lỗi tải video {e.id}: {ex}")
 
             if self.export_tags_flag:
-                export_tags((e.raw or {"id": e.id, "title": e.title, "tags": e.raw.get("tags") if e.raw else []} for e in entries), self.outdir)
+                try:
+                    export_tags((e.raw or {"id": e.id, "title": e.title, "tags": e.raw.get("tags") if e.raw else []} for e in entries), self.outdir)
+                    self.signals.message.emit("Đã xuất tags thành công")
+                except Exception as ex:
+                    self.signals.error.emit(f"Lỗi xuất tags: {ex}")
 
             self.signals.done.emit()
         except Exception as exc:  # pragma: no cover
@@ -191,6 +220,11 @@ class MainWindow(QMainWindow):
         self.quality_combo = QComboBox()
         self.quality_combo.addItems(["best", "1080p", "720p", "480p"])
         self.quality_combo.setToolTip("Chất lượng tải: best → 'bestvideo*+bestaudio/best'; 1080p/720p/480p dùng selector tương ứng.")
+        
+        self.cookie_combo = QComboBox()
+        self.cookie_combo.addItems(["Không dùng", "Chrome", "Edge", "Firefox", "Safari"])
+        self.cookie_combo.setToolTip("Chọn trình duyệt để lấy cookies xác thực YouTube\nLưu ý: Đóng trình duyệt trước khi tải để tránh lỗi cookie database")
+        
         self.chk_only_shorts = QCheckBox("Chỉ Shorts")
         self.chk_only_regular = QCheckBox("Chỉ video thường")
         self.spin_limit = QSpinBox()
@@ -208,12 +242,14 @@ class MainWindow(QMainWindow):
         self.lbl_link = QLabel()
         self.lbl_folder = QLabel()
         self.lbl_quality = QLabel()
+        self.lbl_cookies = QLabel()
         self.lbl_filter = QLabel()
         self.lbl_limit = QLabel()
         self.lbl_options = QLabel("Tuỳ chọn:")
         form.addRow(self.lbl_link, link_row)
         form.addRow(self.lbl_folder, out_container)
         form.addRow(self.lbl_quality, self.quality_combo)
+        form.addRow(self.lbl_cookies, self.cookie_combo)
         form.addRow(self.lbl_filter, self._row([self.chk_only_shorts, self.chk_only_regular]))
         form.addRow(self.lbl_limit, self.spin_limit)
         form.addRow(self.lbl_options, self._row([self.chk_thumb, self.chk_subs, self.chk_tags, self.chk_audio]))
@@ -383,7 +419,10 @@ class MainWindow(QMainWindow):
         limit = self.spin_limit.value()
         thumb = self.chk_thumb.isChecked()
         export_tags_flag = self.chk_tags.isChecked()
-        cookies_from_browser = None
+        
+        # Get cookie browser selection
+        cookie_browser = self.cookie_combo.currentText()
+        cookies_from_browser = None if cookie_browser == "Không dùng" else cookie_browser.lower()
 
         # Save settings
         self._save_settings()
@@ -461,6 +500,9 @@ class MainWindow(QMainWindow):
         q = self.settings.value("lastQuality", "best", type=str)
         idx = max(0, self.quality_combo.findText(q))
         self.quality_combo.setCurrentIndex(idx)
+        cookie = self.settings.value("lastCookie", "Không dùng", type=str)
+        idx = max(0, self.cookie_combo.findText(cookie))
+        self.cookie_combo.setCurrentIndex(idx)
         ftype = self.settings.value("lastFilterType", "all", type=str)
         self.chk_only_shorts.setChecked(ftype == "shorts")
         self.chk_only_regular.setChecked(ftype == "regular")
@@ -476,6 +518,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("lastLink", self.url_edit.text())
         self.settings.setValue("lastOutputDir", self.out_edit.text())
         self.settings.setValue("lastQuality", opts["quality"])
+        self.settings.setValue("lastCookie", self.cookie_combo.currentText())
         self.settings.setValue("lastFilterType", opts["filterType"])
         self.settings.setValue("lastLimit", opts["limit"])
         self.settings.setValue("optThumb", opts["thumb"])
@@ -521,6 +564,7 @@ class MainWindow(QMainWindow):
         self.lbl_link.setText("Liên kết:")
         self.lbl_folder.setText(tr("folder"))
         self.lbl_quality.setText(tr("quality"))
+        self.lbl_cookies.setText("Cookies:")
         self.lbl_filter.setText(tr("filter"))
         self.lbl_limit.setText(tr("limit"))
         self.lbl_options.setText("Tuỳ chọn:")
@@ -597,18 +641,21 @@ class MainWindow(QMainWindow):
         return ok
 
     def _on_error(self, msg: str) -> None:
-        self._append_log(f"Lỗi: {msg}")
+        self._append_log(f"[LỖI] {msg}")
         # Try to parse 'CODE|message|hint' format defensively
         parts = [p.strip() for p in str(msg).split("|", 2)]
-        if parts:
+        if len(parts) >= 3:
             code = parts[0] if parts[0] else "UNKNOWN"
             message = parts[1] if len(parts) > 1 else str(msg)
             hint = parts[2] if len(parts) > 2 else ""
             self.show_error(code, message, hint)
+        else:
+            # If not in expected format, treat as unknown error
+            self.show_error("UNKNOWN", str(msg), "")
         self.set_state("idle")
 
     def _on_done(self) -> None:
-        self._append_log("Hoàn tất!")
+        self._append_log("Hoàn thành tải tất cả video!")
         self.item_progress.setValue(100)
         self.total_progress.setValue(100)
         self.set_state("idle")
@@ -706,6 +753,9 @@ class MainWindow(QMainWindow):
             "PRIVATE": "Video riêng tư/đã xoá.",
             "GEO_BLOCK": "Nội dung bị giới hạn khu vực.",
             "AGE_GATE": "Yêu cầu xác nhận tuổi.",
+            "AUTH_REQUIRED": "YouTube yêu cầu xác thực hoặc lỗi cookies.",
+            "CONTENT_UNAVAILABLE": "Nội dung không khả dụng.",
+            "VIDEO_UNAVAILABLE": "Video không khả dụng.",
             "NETWORK": "Sự cố mạng hoặc máy chủ.",
             "FFMPEG_MISSING": "Thiếu ffmpeg/ffprobe.",
             "NO_SPACE": "Ổ đĩa hết dung lượng.",
@@ -724,7 +774,7 @@ class MainWindow(QMainWindow):
     def _show_error_details(self) -> None:
         QMessageBox.warning(self, "Chi tiết lỗi", self.err_msg.text())
 
-    # --- Link helpers (moved inside class) ---
+    # --- Link helpers ---
     def _paste_from_clipboard(self) -> None:
         from PySide6.QtWidgets import QApplication
 
@@ -763,7 +813,7 @@ class MainWindow(QMainWindow):
         list_id = r"(?P<list>[A-Za-z0-9_-]{10,})"
         channel_id = r"(?P<chid>UC[A-Za-z0-9_-]{22})"
         handle = r"(?P<handle>@[A-Za-z0-9._-]{3,30})"
-        yt = r"(?:https?://)?(?:www\. |m\.)?youtube\.com".replace(" ", "")
+        yt = r"(?:https?://)?(?:www\.|m\.)?youtube\.com"
         ytb = r"(?:https?://)?youtu\.be"
 
         # Bare handle

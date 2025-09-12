@@ -4,8 +4,9 @@ from typing import Any, Dict, List, Optional, Callable
 from loguru import logger
 from yt_dlp import YoutubeDL
 
-from yt_allinone.src.core.models import VideoEntry, DownloadError, ErrorCode
-from yt_allinone.src.core.filters import is_shorts, is_regular
+from ..core.models import VideoEntry, DownloadError, ErrorCode
+from ..core.filters import is_shorts, is_regular
+from ..utils.text_utils import clean_ansi_codes
 
 
 class YtDlpWrapper:
@@ -27,16 +28,28 @@ class YtDlpWrapper:
     def list_entries(self, url: str, cookies: Optional[str] = None, flat: bool = True) -> List[VideoEntry]:
         opts: Dict[str, Any] = {}
         if cookies:
-            opts["cookiefile"] = cookies
+            opts["cookiesfrombrowser"] = (cookies,)
         if flat:
             # Use flat playlist to list quickly
             opts["extract_flat"] = True
         entries: List[VideoEntry] = []
+        
+        # Try with cookies first, then without if cookies fail
         try:
             with self._build_ydl(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
-            raise self._map_error(exc)
+            # If cookies failed and we were using them, try without cookies
+            if cookies and "could not copy" in str(exc).lower():
+                try:
+                    opts_no_cookies = opts.copy()
+                    opts_no_cookies.pop("cookiesfrombrowser", None)
+                    with self._build_ydl(opts_no_cookies) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                except Exception as exc2:
+                    raise self._map_error(exc2)
+            else:
+                raise self._map_error(exc)
 
         if info is None:
             return []
@@ -140,22 +153,67 @@ class YtDlpWrapper:
 
     def _map_error(self, exc: Exception) -> DownloadError:
         msg = str(exc)
+        # Clean up ANSI escape codes that cause display issues in GUI
+        msg = clean_ansi_codes(msg)
+        
         lower = msg.lower()
+        
+        # Content not available (outdated yt-dlp)
+        if "not available on this app" in lower and "latest version of youtube" in lower:
+            return DownloadError(
+                code=ErrorCode.CONTENT_UNAVAILABLE, 
+                message=msg, 
+                hint="yt-dlp cần cập nhật. Chạy: pip install --upgrade yt-dlp"
+            )
+        
+        # Video unavailable
+        if "video unavailable" in lower:
+            return DownloadError(
+                code=ErrorCode.VIDEO_UNAVAILABLE, 
+                message=msg, 
+                hint="Video không khả dụng hoặc đã bị xoá. Thử URL khác."
+            )
+        
+        # Authentication required (bot check)
+        if "sign in to confirm" in lower and "not a bot" in lower:
+            return DownloadError(
+                code=ErrorCode.AUTH_REQUIRED, 
+                message=msg, 
+                hint="YouTube yêu cầu xác thực. Dùng --cookies-from-browser chrome/edge/firefox hoặc --cookies file.txt"
+            )
+        
+        # Cookie database access error
+        if "could not copy" in lower and "cookie database" in lower:
+            return DownloadError(
+                code=ErrorCode.AUTH_REQUIRED,
+                message=msg,
+                hint="Trình duyệt đang chạy, đóng Chrome/Edge rồi thử lại, hoặc chọn trình duyệt khác (Firefox/Safari)"
+            )
+        
         # Network / retryable
         if any(k in lower for k in ["temporary failure", "timed out", "connection", "read error", "http error 5"]):
             return DownloadError(code=ErrorCode.NETWORK, message=msg, hint="Kiểm tra mạng và thử lại.")
+        
         # Private/removed (403/410)
-        if "http error 403" in lower or "http error 410" in lower or "private" in lower or "sign in to confirm" in lower:
+        if "http error 403" in lower or "http error 410" in lower or "private" in lower:
             return DownloadError(code=ErrorCode.PRIVATE, message=msg, hint="Video riêng tư/đã xoá. Cần quyền hoặc URL khác.")
+        
         # Geo block
         if "not available in your country" in lower or "geo" in lower:
             return DownloadError(code=ErrorCode.GEO_BLOCK, message=msg, hint="Bật geo_bypass hoặc dùng cookies phù hợp vùng.")
+        
         # Age gate
         if "age" in lower and ("verify" in lower or "gate" in lower or "consent" in lower):
             return DownloadError(code=ErrorCode.AGE_GATE, message=msg, hint="Dùng cookies-from-browser để vượt qua age gate.")
+        
         # No space
         if "no space" in lower or "no space left" in lower or "disk full" in lower:
             return DownloadError(code=ErrorCode.NO_SPACE, message=msg, hint="Giải phóng dung lượng ổ đĩa.")
+        
+        # HTTP errors (404, etc.)
+        if "http error" in lower:
+            return DownloadError(code=ErrorCode.UNKNOWN, message=msg, hint="URL không hợp lệ hoặc không tồn tại.")
+        
         # Fallback
         return DownloadError(code=ErrorCode.UNKNOWN, message=msg, hint="Thử lại với tuỳ chọn khác hoặc kiểm tra log.")
 

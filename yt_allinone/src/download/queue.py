@@ -13,8 +13,9 @@ import psutil
 from collections import deque
 from yt_dlp import YoutubeDL
 
-from yt_allinone.src.core.models import DownloadTask
-from yt_allinone.src.core.selector import build_format_selector
+from ..core.models import DownloadTask
+from ..core.selector import build_format_selector
+from ..utils.text_utils import clean_ansi_codes
 
 
 T = TypeVar("T")
@@ -94,6 +95,8 @@ def _run_worker(config_path: str) -> int:
     opts.setdefault("retry_sleep_functions", {
         "http": {"times": 10, "backoff": "exp", "interval": 1, "max": 10},
     })
+    # Mitigate Windows rename locks after download completes
+    opts.setdefault("file_access_retries", 10)
 
     try:
         with YoutubeDL(params=opts) as ydl:
@@ -102,7 +105,8 @@ def _run_worker(config_path: str) -> int:
         sys.stdout.flush()
         return 0
     except Exception as exc:  # pragma: no cover (error path)
-        sys.stdout.write(json.dumps({"event": "error", "message": str(exc)}) + "\n")
+        error_msg = clean_ansi_codes(str(exc))
+        sys.stdout.write(json.dumps({"event": "error", "message": error_msg}) + "\n")
         sys.stdout.flush()
         return 1
 
@@ -131,6 +135,42 @@ class DownloadManager:
             except Exception:
                 pass
 
+    def _progress_hook_factory(self) -> Callable[[Dict[str, Any]], None]:
+        def hook(status: Dict[str, Any]) -> None:
+            downloaded = status.get("downloaded_bytes") or 0
+            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+            frag_idx = status.get("fragment_index") or 0
+            frag_cnt = status.get("fragment_count") or 0
+            eta = status.get("eta") or 0
+            elapsed = status.get("elapsed") or 0
+            try:
+                if total:
+                    percent = int(int(downloaded) * 100 / int(total))
+                elif frag_cnt:
+                    percent = int(int(frag_idx) * 100 / int(frag_cnt))
+                elif eta:
+                    # Approximation using elapsed and ETA
+                    percent = int(int(elapsed) * 100 / (int(elapsed) + int(eta))) if (int(elapsed) + int(eta)) > 0 else 0
+                else:
+                    percent = 0
+            except Exception:
+                percent = 0
+
+            payload = {
+                "event": "progress",
+                "status": status.get("status"),
+                "downloaded_bytes": downloaded,
+                "total_bytes": total,
+                "speed": status.get("speed"),
+                "eta": eta,
+                "filename": status.get("filename"),
+                "frag_index": status.get("fragment_index"),
+                "frag_count": status.get("fragment_count"),
+                "percent": percent,
+            }
+            self._emit(payload)
+        return hook
+
     def _build_ydl_opts(self, task: DownloadTask) -> Dict[str, Any]:
         outtmpl = os.path.join(task.outdir, "%(title)s.%(ext)s")
         fmt = "bestaudio/best" if task.only_audio else build_format_selector(task.quality)
@@ -142,8 +182,19 @@ class DownloadManager:
             "noplaylist": False,
             "quiet": True,
             "no_warnings": True,
+            "nopart": True,
             "postprocessors": [],
+            # Safer filenames and better resilience on Windows
+            "windowsfilenames": True,
+            "trim_file_name": 200,
+            "file_access_retries": 10,
+            "geo_bypass": True,
         }
+        
+        # Add cookie support if specified
+        if task.cookies_from_browser:
+            ydl_opts["cookiesfrombrowser"] = (task.cookies_from_browser,)
+        
         if task.only_audio:
             ydl_opts["postprocessors"].append({
                 "key": "FFmpegExtractAudio",
@@ -166,32 +217,19 @@ class DownloadManager:
         if self._proc and self._proc.poll() is None:
             raise RuntimeError("A task is already running")
         self._current = task
-        self._config_file = self._write_config(task)
-
-        # Launch subprocess running this module as a worker
-        cmd = [
-            sys.executable,
-            "-u",
-            "-m",
-            "yt_allinone.src.download.queue",
-            "--worker",
-            self._config_file,
-        ]
-        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self._ps = psutil.Process(self._proc.pid)
-
-        # Reader thread to dispatch progress
-        assert self._proc.stdout is not None
-        def _reader() -> None:
-            for line in self._proc.stdout:
-                try:
-                    data = json.loads(line.strip())
-                except Exception:
-                    continue
-                self._emit(data)
-
-        self._reader_thread = threading.Thread(target=_reader, daemon=True)
-        self._reader_thread.start()
+        
+        # Use direct yt-dlp instead of subprocess
+        ydl_opts = self._build_ydl_opts(task)
+        ydl_opts["progress_hooks"] = [self._progress_hook_factory()]
+        
+        try:
+            from yt_dlp import YoutubeDL
+            with YoutubeDL(params=ydl_opts) as ydl:
+                ydl.extract_info(task.url, download=True)
+            self._emit({"event": "done"})
+        except Exception as exc:
+            error_msg = clean_ansi_codes(str(exc))
+            self._emit({"event": "error", "message": error_msg})
 
     def pause(self) -> None:
         if not self._ps:
@@ -235,7 +273,7 @@ class DownloadManager:
             self._ps = None
 
     def is_running(self) -> bool:
-        return bool(self._proc and self._proc.poll() is None)
+        return bool(self._proc and self._proc.poll() is None) if self._proc else False
 
 
 if __name__ == "__main__":  # Subprocess entry point

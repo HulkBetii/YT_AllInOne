@@ -25,6 +25,7 @@ class DownloadTask(BaseModel):
     outdir: str
     quality: str = "best"
     only_audio: bool = False
+    cookies_from_browser: Optional[str] = None
     options: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -32,14 +33,19 @@ class ErrorCode(str, Enum):
     PRIVATE = "PRIVATE"
     GEO_BLOCK = "GEO_BLOCK"
     AGE_GATE = "AGE_GATE"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    CONTENT_UNAVAILABLE = "CONTENT_UNAVAILABLE"
+    VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
     NETWORK = "NETWORK"
     FFMPEG_MISSING = "FFMPEG_MISSING"
     NO_SPACE = "NO_SPACE"
     UNKNOWN = "UNKNOWN"
 
 
-class DownloadError(BaseModel):
-    code: ErrorCode
-    message: str
-    hint: Optional[str] = None
+class DownloadError(Exception):
+    def __init__(self, code: ErrorCode, message: str, hint: Optional[str] = None):
+        self.code = code
+        self.message = message
+        self.hint = hint
+        super().__init__(message)
 

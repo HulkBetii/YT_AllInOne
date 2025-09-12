@@ -2,8 +2,8 @@ from typing import Any, Dict, List
 import types
 import pytest
 
-from yt_allinone.src.download.ytdlp_wrapper import YtDlpWrapper
-from yt_allinone.src.core.filters import is_shorts, is_regular
+from ..src.download.ytdlp_wrapper import YtDlpWrapper
+from ..src.core.filters import is_shorts, is_regular
 
 
 class FakeYDL:

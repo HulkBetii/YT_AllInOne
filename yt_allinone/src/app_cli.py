@@ -9,13 +9,13 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, BarColumn, TimeRemainingColumn, DownloadColumn, TransferSpeedColumn
 
-from yt_allinone.src.core.selector import build_format_selector
-from yt_allinone.src.core.filters import is_shorts, is_regular
-from yt_allinone.src.core.exporter import download_best_thumbnail, export_tags
-from yt_allinone.src.core.models import DownloadTask
-from yt_allinone.src.download.ytdlp_wrapper import YtDlpWrapper
-from yt_allinone.src.utils.config import get_default_download_dir
-from yt_allinone.src.download.queue import DownloadManager
+from .core.selector import build_format_selector
+from .core.filters import is_shorts, is_regular
+from .core.exporter import download_best_thumbnail, export_tags
+from .core.models import DownloadTask
+from .download.ytdlp_wrapper import YtDlpWrapper
+from .utils.config import get_default_download_dir
+from .download.queue import DownloadManager
 
 
 app = typer.Typer(add_completion=False, help="""
@@ -112,7 +112,14 @@ def get(
     )
 
     def on_prog(ev):  # type: ignore[no-untyped-def]
-        if ev.get("event") != "progress":
+        event = ev.get("event")
+        if event == "error":
+            console.print(f"[red]Download failed: {ev.get('message')}[/red]")
+            return
+        if event == "done":
+            console.print("[green]Download finished[/green]")
+            return
+        if event != "progress":
             return
         status = ev.get("status")
         downloaded = ev.get("downloaded_bytes") or 0
@@ -128,13 +135,37 @@ def get(
 
     for e in entries:
         fmt = build_format_selector(quality)
-        task = DownloadTask(url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}", outdir=outdir, quality=quality, only_audio=only_audio, options={"format": fmt})
+        dl_options = {"format": fmt}
+        if cookies_from_browser:
+            dl_options["cookiesfrombrowser"] = (cookies_from_browser,)
+        task = DownloadTask(
+            url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}",
+            outdir=outdir,
+            quality=quality,
+            only_audio=only_audio,
+            options=dl_options,
+        )
         console.print(f"Downloading: {task.url}")
         manager.start(task)
         # Wait for completion
         # In this simple version, we join by waiting on the reader thread to finish when process exits
         if manager._proc:  # noqa: SLF001 (access internal for simplicity)
             manager._proc.wait()
+
+    # Download thumbnails when not in dry-run mode
+    if thumb:
+        for e in entries:
+            try:
+                path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
+                if path:
+                    dest = os.path.join(outdir, f"{e.id}.jpg")
+                    try:
+                        shutil.move(path, dest)
+                        console.print(f"Saved thumbnail: {dest}")
+                    except Exception:
+                        console.print(f"Saved thumbnail temp: {path}")
+            except Exception as ex:  # pragma: no cover
+                console.print(f"[red]Failed to save thumbnail for {e.id}: {ex}[/red]")
 
     if export_tags_flag:
         export_tags((e.raw or {"id": e.id, "title": e.title, "tags": e.raw.get("tags") if e.raw else []} for e in entries), outdir)

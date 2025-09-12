@@ -1,4 +1,4 @@
-from yt_allinone.src.core.filters import is_shorts, is_regular, apply_filters
+from ..src.core.filters import is_shorts, is_regular, apply_filters
 
 
 def test_is_shorts_by_url() -> None:

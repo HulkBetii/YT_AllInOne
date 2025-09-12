@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from yt_allinone.src.core.exporter import export_tags
+from ..src.core.exporter import export_tags
 
 
 def test_export_tags_unicode_and_empty(tmp_path: Path) -> None:

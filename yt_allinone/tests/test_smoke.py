@@ -1,6 +1,6 @@
 import importlib
 import pytest
-from yt_allinone.src.core.url_parser import parse_input, Kind, ParsedInput
+from ..src.core.url_parser import parse_input, Kind, ParsedInput
 
 
 def test_imports() -> None:

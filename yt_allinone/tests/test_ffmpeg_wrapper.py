@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from yt_allinone.src.download.ffmpeg_wrapper import extract_mp3, FFmpegError
+from ..src.download.ffmpeg_wrapper import extract_mp3, FFmpegError
 
 
 ffmpeg = shutil.which("ffmpeg")
