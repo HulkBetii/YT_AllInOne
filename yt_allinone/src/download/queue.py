@@ -106,7 +106,42 @@ def _run_worker(config_path: str) -> int:
         return 0
     except Exception as exc:  # pragma: no cover (error path)
         error_msg = clean_ansi_codes(str(exc))
-        sys.stdout.write(json.dumps({"event": "error", "message": error_msg}) + "\n")
+        lower = (error_msg or "").lower()
+
+        # Auto-retry once without cookies if cookie DB cannot be copied
+        has_browser_cookies = bool(opts.get("cookiesfrombrowser"))
+        if has_browser_cookies and ("could not copy" in lower and "cookie database" in lower):
+            try:
+                opts_fallback = dict(opts)
+                opts_fallback.pop("cookiesfrombrowser", None)
+                with YoutubeDL(params=opts_fallback) as ydl2:
+                    ydl2.extract_info(url, download=True)
+                sys.stdout.write(json.dumps({"event": "done", "note": "retried_without_cookies"}) + "\n")
+                sys.stdout.flush()
+                return 0
+            except Exception as exc2:
+                error_msg = clean_ansi_codes(str(exc2))
+                lower = (error_msg or "").lower()
+
+        code = None
+        hint = None
+        if "sign in to confirm" in lower and "not a bot" in lower:
+            code = "AUTH_REQUIRED"
+            hint = "YouTube yêu cầu xác thực. Chọn Cookies: Chrome/Edge/Firefox hoặc dùng --cookies-from-browser. Đóng trình duyệt trước khi tải."
+        elif "could not copy" in lower and "cookie database" in lower:
+            code = "AUTH_REQUIRED"
+            hint = "Không thể truy cập cookie database. Đóng trình duyệt rồi thử lại hoặc chọn trình duyệt khác (ví dụ Firefox)."
+        elif "http error 429" in lower or "too many requests" in lower:
+            code = "NETWORK"
+            hint = "Rate limit (429). Bật cookies-from-browser, giảm số lượng tải và thử lại sau."
+        elif "not available on this app" in lower and "latest version of youtube" in lower:
+            code = "CONTENT_UNAVAILABLE"
+            hint = "Cập nhật yt-dlp: pip install --upgrade yt-dlp"
+
+        if code:
+            sys.stdout.write(json.dumps({"event": "error", "message": f"{code}|{error_msg}|{hint or ''}"}) + "\n")
+        else:
+            sys.stdout.write(json.dumps({"event": "error", "message": error_msg}) + "\n")
         sys.stdout.flush()
         return 1
 
@@ -223,15 +258,37 @@ class DownloadManager:
         # Use direct yt-dlp instead of subprocess
         ydl_opts = self._build_ydl_opts(task)
         ydl_opts["progress_hooks"] = [self._progress_hook_factory()]
-        
-        try:
+
+        def _run_with_opts(opts):  # type: ignore[no-untyped-def]
             from yt_dlp import YoutubeDL
-            with YoutubeDL(params=ydl_opts) as ydl:
+            with YoutubeDL(params=opts) as ydl:
                 ydl.extract_info(task.url, download=True)
+
+        try:
+            _run_with_opts(ydl_opts)
             self._emit({"event": "done"})
         except Exception as exc:
-            error_msg = clean_ansi_codes(str(exc))
-            self._emit({"event": "error", "message": error_msg})
+            msg1 = clean_ansi_codes(str(exc))
+            lower = msg1.lower()
+            # If cookie database copy failed, retry once without cookies
+            if ydl_opts.get("cookiesfrombrowser") and ("could not copy" in lower and "cookie database" in lower):
+                try:
+                    retry_opts = dict(ydl_opts)
+                    retry_opts.pop("cookiesfrombrowser", None)
+                    _run_with_opts(retry_opts)
+                    self._emit({"event": "done"})
+                    return
+                except Exception as exc2:
+                    msg2 = clean_ansi_codes(str(exc2))
+                    self._emit({"event": "error", "message": f"AUTH_REQUIRED|{msg2}|Không thể truy cập cookie database. Đóng trình duyệt rồi thử lại, hoặc chọn trình duyệt khác (ví dụ Firefox)."})
+                    return
+            # Generic mapping for common errors
+            if "sign in to confirm" in lower and "not a bot" in lower:
+                self._emit({"event": "error", "message": f"AUTH_REQUIRED|{msg1}|YouTube yêu cầu xác thực. Chọn Cookies: Chrome/Edge/Firefox hoặc dùng --cookies-from-browser."})
+            elif "http error 429" in lower or "too many requests" in lower:
+                self._emit({"event": "error", "message": f"NETWORK|{msg1}|Rate limit (429). Bật cookies-from-browser, giảm số lượng tải và thử lại sau."})
+            else:
+                self._emit({"event": "error", "message": msg1})
 
     def pause(self) -> None:
         if not self._ps:

@@ -55,6 +55,8 @@ def get(
     limit: Optional[int] = typer.Option(None, "--limit", min=1, help="Max number of items"),
     thumb: bool = typer.Option(False, "--thumb", help="Download best thumbnail"),
     subtitles_only: bool = typer.Option(False, "--subs-only", help="Download subtitles only and skip media"),
+    safe_mode: bool = typer.Option(False, "--safe-mode", help="Increase request sleep/retries to reduce 429 and flakiness"),
+    user_agent: Optional[str] = typer.Option(None, "--user-agent", help="Custom User-Agent header to mimic your browser"),
     export_tags_flag: bool = typer.Option(False, "--export-tags", help="Export tags.csv and tags.json"),
     outdir: str = typer.Option(get_default_download_dir(), "--out", help="Output directory"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Do not download, only list"),
@@ -66,6 +68,16 @@ def get(
     ydl_opts = {
         "geo_bypass": True,
     }
+    if safe_mode:
+        ydl_opts.update({
+            "retries": 10,
+            "fragment_retries": 10,
+            "retry_sleep_functions": {"http": {"times": 10, "backoff": "exp", "interval": 1, "max": 10}},
+            "sleep_requests": 2,
+            "file_access_retries": 10,
+        })
+    if user_agent:
+        ydl_opts["http_headers"] = {"User-Agent": user_agent}
     if cookies_from_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
@@ -161,6 +173,15 @@ def get(
             dl_options["format"] = fmt
         if cookies_from_browser:
             dl_options["cookiesfrombrowser"] = (cookies_from_browser,)
+        if safe_mode:
+            dl_options.update({
+                "retries": 10,
+                "fragment_retries": 10,
+                "retry_sleep_functions": {"http": {"times": 10, "backoff": "exp", "interval": 1, "max": 10}},
+                "file_access_retries": 10,
+            })
+        if user_agent:
+            dl_options["http_headers"] = {"User-Agent": user_agent}
         task = DownloadTask(
             url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}",
             outdir=outdir,

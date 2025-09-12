@@ -318,8 +318,8 @@ class MainWindow(QMainWindow):
         self.quality_combo.setToolTip("Chất lượng tải: best → 'bestvideo*+bestaudio/best'; 1080p/720p/480p dùng selector tương ứng.")
         
         self.cookie_combo = QComboBox()
-        self.cookie_combo.addItems(["Không dùng", "Chrome", "Edge", "Firefox", "Safari"])
-        self.cookie_combo.setToolTip("Chọn trình duyệt để lấy cookies xác thực YouTube\nLưu ý: Đóng trình duyệt trước khi tải để tránh lỗi cookie database")
+        self.cookie_combo.addItems(["Không dùng", "Firefox", "Chrome", "Edge", "Safari"])  # Prefer Firefox first
+        self.cookie_combo.setToolTip("Chọn trình duyệt để lấy cookies xác thực YouTube\nKhuyến nghị: Firefox (ổn định). Đóng trình duyệt trước khi tải để tránh lỗi cookie database.")
         
         self.chk_only_shorts = QCheckBox("Chỉ Shorts")
         self.chk_only_regular = QCheckBox("Chỉ video thường")
@@ -333,6 +333,11 @@ class MainWindow(QMainWindow):
         self.chk_tags.setToolTip("Xuất tags sang CSV/JSON sau khi tải xong.")
         self.chk_audio = QCheckBox("Chỉ tải MP3")
         self.chk_audio.setToolTip("Sẽ trích âm thanh bằng ffmpeg và gắn metadata")
+        # Safe mode + User-Agent
+        self.chk_safe = QCheckBox("Chế độ an toàn (giảm 429)")
+        self.chk_safe.setToolTip("Tăng retries/backoff và nghỉ giữa các request")
+        self.ua_edit = QLineEdit()
+        self.ua_edit.setPlaceholderText("User-Agent (tuỳ chọn)")
 
         # Row labels for i18n
         self.lbl_link = QLabel()
@@ -349,6 +354,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.lbl_filter, self._row([self.chk_only_shorts, self.chk_only_regular]))
         form.addRow(self.lbl_limit, self.spin_limit)
         form.addRow(self.lbl_options, self._row([self.chk_thumb, self.chk_subs, self.chk_tags, self.chk_audio]))
+        form.addRow(QLabel(""), self._row([self.chk_safe, self.ua_edit]))
 
         # Controls
         ctrl_layout = QHBoxLayout()
@@ -517,6 +523,8 @@ class MainWindow(QMainWindow):
         limit = self.spin_limit.value()
         thumb = self.chk_thumb.isChecked()
         export_tags_flag = self.chk_tags.isChecked()
+        safe_mode = self.chk_safe.isChecked()
+        user_agent = self.ua_edit.text().strip()
         
         # Get cookie browser selection
         cookie_browser = self.cookie_combo.currentText()
