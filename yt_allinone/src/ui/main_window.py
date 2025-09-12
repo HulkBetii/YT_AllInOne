@@ -51,7 +51,7 @@ class ProgressSignal(QObject):
 
 
 class DownloadThread(QThread):
-    def __init__(self, urls: List[str], outdir: str, quality: str, only_audio: bool, only_shorts: bool, only_regular: bool, limit: Optional[int], thumb: bool, export_tags_flag: bool, cookies_from_browser: Optional[str]) -> None:
+    def __init__(self, urls: List[str], outdir: str, quality: str, only_audio: bool, only_shorts: bool, only_regular: bool, limit: Optional[int], thumb: bool, export_tags_flag: bool, cookies_from_browser: Optional[str], subtitles_only: bool) -> None:
         super().__init__()
         self.urls = urls
         self.outdir = outdir
@@ -63,6 +63,7 @@ class DownloadThread(QThread):
         self.thumb = thumb
         self.export_tags_flag = export_tags_flag
         self.cookies_from_browser = cookies_from_browser
+        self.subtitles_only = subtitles_only
         self.signals = ProgressSignal()
         self.manager = DownloadManager()
         self.manager.on_progress(self._on_progress)
@@ -127,12 +128,60 @@ class DownloadThread(QThread):
                 if self.stop_after_current:
                     break
                     
-                fmt = build_format_selector(self.quality)
-                task = DownloadTask(url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}", outdir=self.outdir, quality=self.quality, only_audio=self.only_audio, cookies_from_browser=self.cookies_from_browser, options={"format": fmt})
-                self.signals.message.emit(f"Đang tải: {task.url}")
+                # Build per-item options
+                options: Dict[str, Any] = {}
+                if self.subtitles_only:
+                    # Two-phase logic handled after start; here we set minimal opts
+                    options.update({"skip_download": True})
+                else:
+                    fmt = build_format_selector(self.quality)
+                    options["format"] = fmt
+
+                task = DownloadTask(url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}", outdir=self.outdir, quality=self.quality, only_audio=self.only_audio if not self.subtitles_only else False, cookies_from_browser=self.cookies_from_browser, options=options)
+                if self.subtitles_only:
+                    self.signals.message.emit(f"Đang tải phụ đề: {task.url}")
+                elif self.only_audio:
+                    self.signals.message.emit(f"Đang tải MP3: {task.url}")
+                else:
+                    self.signals.message.emit(f"Đang tải: {task.url}")
                 
                 try:
-                    self.manager.start(task)
+                    # Snapshot subtitle files before download
+                    try:
+                        before = set(name for name in os.listdir(self.outdir) if name.lower().endswith((".srt", ".vtt")))
+                    except Exception:
+                        before = set()
+
+                    if self.subtitles_only:
+                        # Phase 1: manual subs only
+                        task.options.update({
+                            "writesubtitles": True,
+                            "writeautomaticsub": False,
+                            "subtitleslangs": ["vi", "en"],
+                            "subtitlesformat": "srt/best",
+                            "sleep_requests": 2,
+                        })
+                        self.manager.start(task)
+                        while self.manager.is_running():
+                            self.msleep(100)
+
+                        # Check new files; if none, try auto-sub
+                        try:
+                            after1 = set(name for name in os.listdir(self.outdir) if name.lower().endswith((".srt", ".vtt")))
+                        except Exception:
+                            after1 = set()
+                        phase1_new = sorted(list(after1 - before))
+
+                        if not phase1_new:
+                            task.options.update({
+                                "writesubtitles": False,
+                                "writeautomaticsub": True,
+                                "subtitleslangs": ["vi", "en", "best"],
+                                "subtitlesformat": "srt/best",
+                            })
+                            self.manager.start(task)
+                    else:
+                        self.manager.start(task)
                     # Wait for the download to complete
                     while self.manager.is_running():
                         self.msleep(100)  # Sleep for 100ms to avoid blocking
@@ -141,7 +190,33 @@ class DownloadThread(QThread):
                     if self.total_count:
                         overall_pct = int(self.completed_items * 100 / self.total_count)
                         self.signals.progress.emit({"event": "overall", "overall_percent": overall_pct})
-                    self.signals.message.emit(f"Hoàn thành tải video {self.completed_items}/{self.total_count}")
+                    if self.subtitles_only:
+                        try:
+                            after = set(name for name in os.listdir(self.outdir) if name.lower().endswith((".srt", ".vtt")))
+                        except Exception:
+                            after = set()
+                        new_subs = sorted(list(after - before))
+                        # If both vi.srt and vi-orig.srt present, prefer vi.srt and ignore -orig in message count
+                        filtered = []
+                        base_seen = set()
+                        for name in new_subs:
+                            base = name.replace(".vi-orig.srt", ".vi.srt")
+                            if base in base_seen:
+                                continue
+                            base_seen.add(base)
+                            # Prefer .vi.srt when both exist
+                            if name.endswith(".vi-orig.srt") and (base in new_subs):
+                                continue
+                            filtered.append(name)
+                        if filtered:
+                            self.signals.message.emit(f"Hoàn thành tải phụ đề {self.completed_items}/{self.total_count} → {self.outdir} ({len(filtered)} file)")
+                        else:
+                            self.signals.message.emit("Không tìm thấy phụ đề cho video này.")
+                    else:
+                        if self.only_audio:
+                            self.signals.message.emit(f"Hoàn thành tải MP3 {self.completed_items}/{self.total_count}")
+                        else:
+                            self.signals.message.emit(f"Hoàn thành tải video {self.completed_items}/{self.total_count}")
                 except Exception as ex:
                     self.signals.error.emit(f"Lỗi tải video {e.id}: {ex}")
 
@@ -194,25 +269,39 @@ class MainWindow(QMainWindow):
         self.url_edit.setPlaceholderText("Nhập nhiều liên kết (mỗi dòng một link hoặc cách nhau bằng dấu phẩy)")
         self.url_edit.setFixedHeight(60)
         self.url_edit.setWordWrapMode(QTextOption.NoWrap)
-        # Link row with actions: Paste, Detect, and chip label
+        # Link section: textarea on first row, buttons below on second row
         link_row = QWidget()
-        link_row_lay = QHBoxLayout(link_row)
-        link_row_lay.setContentsMargins(12, 12, 12, 12)
-        link_row_lay.setSpacing(8)
+        link_row_col = QVBoxLayout(link_row)
+        link_row_col.setContentsMargins(12, 12, 12, 12)
+        link_row_col.setSpacing(8)
         self.btn_paste = QPushButton("Dán")
+        self.btn_paste.setObjectName("secondary")
         self.btn_paste.setToolTip("Dán từ clipboard (Ctrl+V)")
         self.btn_paste.setShortcut(QKeySequence.Paste)
         self.btn_detect = QPushButton("Nhận diện")
+        self.btn_detect.setObjectName("info")
         self.btn_detect.setToolTip("Phân loại và chuẩn hoá liên kết")
+        self.btn_clear = QPushButton("Xóa hết")
+        self.btn_clear.setObjectName("danger")
+        self.btn_clear.setToolTip("Xoá toàn bộ liên kết đang nhập")
         self.kind_chip = QLabel("")
         self.kind_chip.setVisible(False)
         self.kind_chip.setStyleSheet(
             "QLabel { background-color: #3aa3e3; color: white; border-radius: 8px; padding: 2px 6px; }"
         )
-        link_row_lay.addWidget(self.url_edit, 1)
-        link_row_lay.addWidget(self.btn_paste)
-        link_row_lay.addWidget(self.btn_detect)
-        link_row_lay.addWidget(self.kind_chip)
+        # First line: URL edit only
+        link_row_col.addWidget(self.url_edit, 1)
+        # Second line: buttons in a horizontal layout
+        link_btns = QWidget()
+        link_btns_lay = QHBoxLayout(link_btns)
+        link_btns_lay.setContentsMargins(0, 0, 0, 0)
+        link_btns_lay.setSpacing(8)
+        link_btns_lay.addWidget(self.btn_paste)
+        link_btns_lay.addWidget(self.btn_detect)
+        link_btns_lay.addWidget(self.btn_clear)
+        link_btns_lay.addStretch(1)
+        link_btns_lay.addWidget(self.kind_chip)
+        link_row_col.addWidget(link_btns)
         self.out_edit = QLineEdit(get_default_download_dir())
         self.browse_btn = QPushButton("Chọn...")
         out_layout = QHBoxLayout()
@@ -272,6 +361,7 @@ class MainWindow(QMainWindow):
         self.btn_cancel = QPushButton()
         self.btn_cancel.setObjectName("danger")
         self.btn_list = QPushButton()
+        self.btn_list.setObjectName("secondary")
         ctrl_layout.addWidget(self.btn_start)
         ctrl_layout.addWidget(self.btn_pause)
         ctrl_layout.addWidget(self.btn_cancel)
@@ -383,6 +473,7 @@ class MainWindow(QMainWindow):
         # Link actions
         self.btn_paste.clicked.connect(self._paste_from_clipboard)
         self.btn_detect.clicked.connect(self._detect_url)
+        self.btn_clear.clicked.connect(self._clear_links)
         self.url_edit.textChanged.connect(self._detect_url_light)
         self.url_edit.textChanged.connect(lambda: self._validate_inputs(True))
 
@@ -435,7 +526,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
         urls = self._normalize_urls(self._parse_urls(url))
-        self.worker = DownloadThread(urls, outdir, quality, only_audio, only_shorts, only_regular, limit, thumb, export_tags_flag, cookies_from_browser)
+        self.worker = DownloadThread(urls, outdir, quality, only_audio, only_shorts, only_regular, limit, thumb, export_tags_flag, cookies_from_browser, subtitles_only=self.chk_subs.isChecked())
         self.worker.signals.progress.connect(self._on_progress)
         self.worker.signals.message.connect(self._append_log)
         self.worker.signals.error.connect(self._on_error)
@@ -913,6 +1004,13 @@ class MainWindow(QMainWindow):
             seen.add(key)
             result.append(c)
         return result
+
+    def _clear_links(self) -> None:
+        # Clear all links, hide chip and error banner, and re-validate inputs
+        self.url_edit.setPlainText("")
+        self.kind_chip.setVisible(False)
+        self.hide_error()
+        self._validate_inputs(True)
 
     # --- Dry-run dialog ---
     def _open_dryrun_dialog(self) -> None:

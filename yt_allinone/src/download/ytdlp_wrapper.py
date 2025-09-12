@@ -19,6 +19,10 @@ class YtDlpWrapper:
             "noplaylist": False,
             "nocheckcertificate": True,
             "skip_download": True,
+            # Backoff/retry settings to mitigate 429/HTTP rate limits on subtitles
+            "retries": 10,
+            "fragment_retries": 10,
+            "retry_sleep_functions": {"http": {"times": 10, "backoff": "exp", "interval": 1, "max": 10}},
         }
         final_opts.update(self.options)
         if opts:
@@ -190,7 +194,9 @@ class YtDlpWrapper:
                 hint="Trình duyệt đang chạy, đóng Chrome/Edge rồi thử lại, hoặc chọn trình duyệt khác (Firefox/Safari)"
             )
         
-        # Network / retryable
+        # Rate limit / network / retryable
+        if "http error 429" in lower or "too many requests" in lower:
+            return DownloadError(code=ErrorCode.NETWORK, message=msg, hint="YouTube rate limit (429). Bật cookies-from-browser và thử lại sau ít phút.")
         if any(k in lower for k in ["temporary failure", "timed out", "connection", "read error", "http error 5"]):
             return DownloadError(code=ErrorCode.NETWORK, message=msg, hint="Kiểm tra mạng và thử lại.")
         

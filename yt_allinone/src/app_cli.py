@@ -54,6 +54,7 @@ def get(
     only_regular: bool = typer.Option(False, "--only-regular", help="Filter non-Shorts"),
     limit: Optional[int] = typer.Option(None, "--limit", min=1, help="Max number of items"),
     thumb: bool = typer.Option(False, "--thumb", help="Download best thumbnail"),
+    subtitles_only: bool = typer.Option(False, "--subs-only", help="Download subtitles only and skip media"),
     export_tags_flag: bool = typer.Option(False, "--export-tags", help="Export tags.csv and tags.json"),
     outdir: str = typer.Option(get_default_download_dir(), "--out", help="Output directory"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Do not download, only list"),
@@ -143,18 +144,31 @@ def get(
     manager.on_progress(on_prog)
 
     for e in entries:
-        fmt = build_format_selector(quality)
-        dl_options = {"format": fmt}
+        dl_options = {}
+        if subtitles_only:
+            dl_options.update({
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                # prefer Vietnamese/English then best
+                "subtitleslangs": ["vi", "vi.*", "en", "en.*", "best"],
+                # Prefer srt first, fallback once to best
+                "subtitlesformat": "srt/best",
+                "sleep_requests": 2,
+            })
+        else:
+            fmt = build_format_selector(quality)
+            dl_options["format"] = fmt
         if cookies_from_browser:
             dl_options["cookiesfrombrowser"] = (cookies_from_browser,)
         task = DownloadTask(
             url=e.url or e.webpage_url or f"https://www.youtube.com/watch?v={e.id}",
             outdir=outdir,
             quality=quality,
-            only_audio=only_audio,
+            only_audio=only_audio if not subtitles_only else False,
             options=dl_options,
         )
-        console.print(f"Downloading: {task.url}")
+        console.print("Downloading subtitles: " + (task.url if subtitles_only else f"{task.url}"))
         manager.start(task)
         # Wait for completion
         # In this simple version, we join by waiting on the reader thread to finish when process exits

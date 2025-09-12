@@ -172,11 +172,12 @@ class DownloadManager:
         return hook
 
     def _build_ydl_opts(self, task: DownloadTask) -> Dict[str, Any]:
-        outtmpl = os.path.join(task.outdir, "%(title)s.%(ext)s")
+        outtmpl_default = os.path.join(task.outdir, "%(title)s.%(ext)s")
         fmt = "bestaudio/best" if task.only_audio else build_format_selector(task.quality)
         ydl_opts: Dict[str, Any] = {
             "format": fmt,
-            "outtmpl": outtmpl,
+            # Use per-type outtmpl to ensure subtitles go to the same folder with proper name
+            "outtmpl": {"default": outtmpl_default, "subtitle": outtmpl_default},
             "continuedl": True,
             "overwrites": False,
             "noplaylist": False,
@@ -201,6 +202,7 @@ class DownloadManager:
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             })
+        # If subtitles-only requested via options, avoid adding duplicate post-processors
         ydl_opts.update(task.options or {})
         return ydl_opts
 
