@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Optional
+from typing import Optional, List
 
 import typer
 from rich.console import Console
@@ -12,6 +12,7 @@ from rich.progress import Progress, BarColumn, TimeRemainingColumn, DownloadColu
 from .core.selector import build_format_selector
 from .core.filters import is_shorts, is_regular
 from .core.exporter import download_best_thumbnail, export_tags
+from .utils.text_utils import make_safe_filename
 from .core.models import DownloadTask
 from .download.ytdlp_wrapper import YtDlpWrapper
 from .utils.config import get_default_download_dir
@@ -40,12 +41,13 @@ def _choose_filter(only_shorts: bool, only_regular: bool):
 
 
 @app.command(help="""
-Fetch entries and optionally download.
+Fetch entries from one or many inputs and optionally download.
 
 If --dry-run is set, only list entries with a table. Otherwise, download entries sequentially.
+You can pass multiple URLs separated by space.
 """)
 def get(
-    url: str = typer.Argument(..., help="Video/playlist/channel/handle URL"),
+    urls: List[str] = typer.Argument(..., help="One or many Video/playlist/channel/handle URLs", metavar="URL ..."),
     quality: str = typer.Option("best", "--quality", help="best|1080p|720p|480p"),
     only_audio: bool = typer.Option(False, "--only-audio", help="Extract audio only"),
     only_shorts: bool = typer.Option(False, "--only-shorts", help="Filter Shorts only"),
@@ -69,23 +71,27 @@ def get(
     wrapper = YtDlpWrapper(options=ydl_opts)
 
     if dry_run:
-        entries = wrapper.dry_run(url, filter_fn=filter_fn, limit=limit)
+        all_entries = []
+        for u in urls:
+            entries = wrapper.dry_run(u, filter_fn=filter_fn, limit=limit)
+            all_entries.extend(entries)
         table = Table(title="Dry Run Entries")
         table.add_column("#", justify="right")
         table.add_column("id")
         table.add_column("title")
         table.add_column("duration")
         table.add_column("url")
-        for idx, e in enumerate(entries, 1):
+        for idx, e in enumerate(all_entries, 1):
             table.add_row(str(idx), e.id, e.title or "", str(e.duration or ""), e.url or "")
         console.print(table)
 
         if thumb:
             os.makedirs(outdir, exist_ok=True)
-            for e in entries:
+            for e in all_entries:
                 path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
                 if path:
-                    dest = os.path.join(outdir, f"{e.id}.jpg")
+                    safe_title = make_safe_filename(e.title or e.id)
+                    dest = os.path.join(outdir, f"thumbnail_{safe_title}.jpg")
                     try:
                         shutil.move(path, dest)
                         console.print(f"Saved thumbnail: {dest}")
@@ -93,12 +99,15 @@ def get(
                         console.print(f"Saved thumbnail temp: {path}")
 
         if export_tags_flag:
-            export_tags((e.raw or {"id": e.id, "title": e.title, "tags": e.raw.get("tags") if e.raw else []} for e in entries), outdir)
+            export_tags((e.raw or {"id": e.id, "title": e.title, "tags": e.raw.get("tags") if e.raw else []} for e in all_entries), outdir)
         return
 
     # Actual download
     os.makedirs(outdir, exist_ok=True)
-    entries = wrapper.dry_run(url, filter_fn=filter_fn, limit=limit)
+    # Aggregate entries from all inputs
+    entries = []
+    for u in urls:
+        entries.extend(wrapper.dry_run(u, filter_fn=filter_fn, limit=limit))
 
     manager = DownloadManager()
     progress = Progress(
@@ -158,7 +167,8 @@ def get(
             try:
                 path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
                 if path:
-                    dest = os.path.join(outdir, f"{e.id}.jpg")
+                    safe_title = make_safe_filename(e.title or e.id)
+                    dest = os.path.join(outdir, f"thumbnail_{safe_title}.jpg")
                     try:
                         shutil.move(path, dest)
                         console.print(f"Saved thumbnail: {dest}")

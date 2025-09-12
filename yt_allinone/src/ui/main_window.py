@@ -35,6 +35,7 @@ from PySide6.QtGui import QAction as GuiAction  # noqa: F401 (not used directly;
 from ..core.selector import build_format_selector
 from ..core.filters import is_shorts, is_regular
 from ..core.exporter import download_best_thumbnail, export_tags
+from ..utils.text_utils import make_safe_filename
 from ..core.models import DownloadTask
 from ..download.ytdlp_wrapper import YtDlpWrapper
 from ..download.queue import DownloadManager
@@ -50,9 +51,9 @@ class ProgressSignal(QObject):
 
 
 class DownloadThread(QThread):
-    def __init__(self, url: str, outdir: str, quality: str, only_audio: bool, only_shorts: bool, only_regular: bool, limit: Optional[int], thumb: bool, export_tags_flag: bool, cookies_from_browser: Optional[str]) -> None:
+    def __init__(self, urls: List[str], outdir: str, quality: str, only_audio: bool, only_shorts: bool, only_regular: bool, limit: Optional[int], thumb: bool, export_tags_flag: bool, cookies_from_browser: Optional[str]) -> None:
         super().__init__()
-        self.url = url
+        self.urls = urls
         self.outdir = outdir
         self.quality = quality
         self.only_audio = only_audio
@@ -87,15 +88,18 @@ class DownloadThread(QThread):
                 ydl_opts["cookiesfrombrowser"] = (self.cookies_from_browser,)
             wrapper = YtDlpWrapper(options=ydl_opts)
 
-            # Try with cookies first, then without if cookies fail
-            try:
-                entries = wrapper.dry_run(self.url, filter_fn=filter_fn, limit=self.limit, cookies=self.cookies_from_browser)
-            except Exception as exc:
-                if self.cookies_from_browser and "could not copy" in str(exc).lower():
-                    self.signals.message.emit("Không thể truy cập cookies, thử tải không cookies...")
-                    entries = wrapper.dry_run(self.url, filter_fn=filter_fn, limit=self.limit, cookies=None)
-                else:
-                    raise exc
+            # Try with cookies first, then without if cookies fail, across all URLs
+            entries: List[Any] = []
+            for u in self.urls:
+                try:
+                    part = wrapper.dry_run(u, filter_fn=filter_fn, limit=self.limit, cookies=self.cookies_from_browser)
+                except Exception as exc:
+                    if self.cookies_from_browser and "could not copy" in str(exc).lower():
+                        self.signals.message.emit("Không thể truy cập cookies, thử tải không cookies...")
+                        part = wrapper.dry_run(u, filter_fn=filter_fn, limit=self.limit, cookies=None)
+                    else:
+                        raise exc
+                entries.extend(part)
             if not entries:
                 self.signals.error.emit("Không tìm thấy video nào để tải")
                 return
@@ -109,7 +113,8 @@ class DownloadThread(QThread):
                     try:
                         path = download_best_thumbnail(e.id, e.raw.get("thumbnails") if e.raw else None)
                         if path:
-                            dest = os.path.join(self.outdir, f"{e.id}.jpg")
+                            safe_title = make_safe_filename(e.title or e.id)
+                            dest = os.path.join(self.outdir, f"thumbnail_{safe_title}.jpg")
                             try:
                                 os.replace(path, dest)
                                 self.signals.message.emit(f"Đã tải thumbnail: {dest}")
@@ -185,8 +190,10 @@ class MainWindow(QMainWindow):
         form = QFormLayout(self.input_group)
         form.setContentsMargins(12, 12, 12, 12)
         form.setSpacing(8)
-        self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("https://youtu.be/..., /watch?v=..., /playlist?list=..., /@handle…")
+        self.url_edit = QPlainTextEdit()
+        self.url_edit.setPlaceholderText("Nhập nhiều liên kết (mỗi dòng một link hoặc cách nhau bằng dấu phẩy)")
+        self.url_edit.setFixedHeight(60)
+        self.url_edit.setWordWrapMode(QTextOption.NoWrap)
         # Link row with actions: Paste, Detect, and chip label
         link_row = QWidget()
         link_row_lay = QHBoxLayout(link_row)
@@ -408,7 +415,7 @@ class MainWindow(QMainWindow):
     def _start(self) -> None:
         if self.worker and self.worker.isRunning():
             return
-        url = self.url_edit.text().strip()
+        url = self.url_edit.toPlainText().strip()
         outdir = self.out_edit.text().strip()
         if not self._validate_inputs(False):
             return
@@ -427,7 +434,8 @@ class MainWindow(QMainWindow):
         # Save settings
         self._save_settings()
 
-        self.worker = DownloadThread(url, outdir, quality, only_audio, only_shorts, only_regular, limit, thumb, export_tags_flag, cookies_from_browser)
+        urls = self._normalize_urls(self._parse_urls(url))
+        self.worker = DownloadThread(urls, outdir, quality, only_audio, only_shorts, only_regular, limit, thumb, export_tags_flag, cookies_from_browser)
         self.worker.signals.progress.connect(self._on_progress)
         self.worker.signals.message.connect(self._append_log)
         self.worker.signals.error.connect(self._on_error)
@@ -491,7 +499,7 @@ class MainWindow(QMainWindow):
 
     # --- Settings persistence ---
     def _load_settings(self) -> None:
-        self.url_edit.setText(self.settings.value("lastLink", "", type=str))
+        self.url_edit.setPlainText(self.settings.value("lastLink", "", type=str))
         out = self.settings.value("lastOutputDir", "", type=str)
         if out:
             self.out_edit.setText(out)
@@ -515,7 +523,7 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         opts = self.read_options()
-        self.settings.setValue("lastLink", self.url_edit.text())
+        self.settings.setValue("lastLink", self.url_edit.toPlainText())
         self.settings.setValue("lastOutputDir", self.out_edit.text())
         self.settings.setValue("lastQuality", opts["quality"])
         self.settings.setValue("lastCookie", self.cookie_combo.currentText())
@@ -595,7 +603,7 @@ class MainWindow(QMainWindow):
         self.out_edit.style().unpolish(self.out_edit)
         self.out_edit.style().polish(self.out_edit)
 
-        url = self.url_edit.text().strip()
+        text = self.url_edit.toPlainText().strip()
         folder = self.out_edit.text().strip()
 
         # URL regex
@@ -609,18 +617,23 @@ class MainWindow(QMainWindow):
             r"/@",
             r"/shorts/",
         ]
-        if url:
-            for p in patterns:
-                if re.search(p, url, flags=re.I):
-                    url_ok = True
-                    break
-            if not url_ok:
+        urls = self._normalize_urls(self._parse_urls(text))
+        if urls:
+            def is_valid(u: str) -> bool:
+                for p in patterns:
+                    if re.search(p, u, flags=re.I):
+                        return True
+                return False
+            invalids = [u for u in urls if not is_valid(u)]
+            if invalids:
                 self.url_edit.setProperty("error", True)
                 self.url_edit.style().unpolish(self.url_edit)
                 self.url_edit.style().polish(self.url_edit)
                 if not quiet:
-                    self.show_error("UNKNOWN", "Liên kết không hợp lệ.", "Kiểm tra URL YouTube hợp lệ.")
+                    self.show_error("UNKNOWN", "Có liên kết không hợp lệ.", "Mỗi dòng là một URL YouTube hợp lệ hoặc phân tách bằng dấu phẩy.")
                 ok = False
+            else:
+                url_ok = True
         else:
             # Empty URL is not an error, but Start should be disabled and error banner hidden
             url_ok = False
@@ -780,26 +793,48 @@ class MainWindow(QMainWindow):
 
         cb = QApplication.clipboard()
         text = cb.text() if cb else ""
-        if text:
-            self.url_edit.setText(text.strip())
+        pasted = (text or "").strip()
+        if not pasted:
+            return
+
+        edit = self.url_edit
+        cursor = edit.textCursor()
+        block = cursor.block()
+        current_line = block.text()
+
+        cursor.beginEditBlock()
+        try:
+            if current_line.strip():
+                # Replace the entire current line with the new link(s)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.insertText(pasted)
+            else:
+                # Insert at current position on empty line
+                cursor.insertText(pasted)
+            # Always go to a new line after paste
+            cursor.insertText("\n")
+            edit.setTextCursor(cursor)
+        finally:
+            cursor.endEditBlock()
 
     def _detect_url_light(self) -> None:
-        url = self.url_edit.text().strip()
-        kind, canonical = self.classify_url(url)
-        if kind:
-            self.kind_chip.setText(kind)
+        text = self.url_edit.toPlainText().strip()
+        urls = self._normalize_urls(self._parse_urls(text))
+        count = len(urls)
+        if count:
+            self.kind_chip.setText(f"{count} link")
             self.kind_chip.setVisible(True)
         else:
             self.kind_chip.setVisible(False)
 
     def _detect_url(self) -> None:
-        url = self.url_edit.text().strip()
-        kind, canonical = self.classify_url(url)
-        if kind:
-            self.kind_chip.setText(kind)
+        text = self.url_edit.toPlainText().strip()
+        urls = self._normalize_urls(self._parse_urls(text))
+        if urls:
+            self.url_edit.setPlainText("\n".join(urls))
+            self.kind_chip.setText(f"{len(urls)} link")
             self.kind_chip.setVisible(True)
-        if canonical and canonical != url:
-            self.url_edit.setText(canonical)
 
     # Pure-UI classifier without backend
     def classify_url(self, url: str) -> tuple[str, str]:
@@ -859,6 +894,25 @@ class MainWindow(QMainWindow):
             return "HANDLE", f"https://www.youtube.com/{h}/videos"
 
         return "", s
+
+    def _parse_urls(self, text: str) -> List[str]:
+        import re
+        parts = re.split(r"[\n,\s]+", text or "")
+        return [p.strip() for p in parts if p and p.strip()]
+
+    def _normalize_urls(self, urls: List[str]) -> List[str]:
+        # Canonicalize and deduplicate while keeping order
+        seen = set()
+        result: List[str] = []
+        for u in urls:
+            _kind, canonical = self.classify_url(u)
+            c = canonical or u
+            key = c.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(c)
+        return result
 
     # --- Dry-run dialog ---
     def _open_dryrun_dialog(self) -> None:

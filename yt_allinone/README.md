@@ -12,7 +12,7 @@ YouTube All-in-One Tool là một ứng dụng đa năng để tải và xử l�
 # GUI version
 python run_gui.py
 
-# CLI version  
+# CLI version
 python run_cli.py --help
 ```
 
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 ## 🎨 Tính năng
 
 - **GUI**: Giao diện đồ họa với PySide6
-- **CLI**: Command line interface với typer và rich
+- **CLI**: Command line interface với typer và rich; hỗ trợ nhập N URL cùng lúc
 - **Download**: Hỗ trợ nhiều format video
 - **Processing**: Xử lý video với FFmpeg
 - **Export**: Xuất metadata và thumbnails
@@ -68,7 +68,7 @@ python -m pytest tests/
 python run_gui.py
 
 # CLI
-python run_cli.py --help
+python run_cli.py get URL1 URL2 URL3 --quality 1080p --out downloads
 ```
 
 ## 📞 Hỗ trợ

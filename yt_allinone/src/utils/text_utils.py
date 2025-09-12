@@ -66,3 +66,40 @@ def format_error_message(error: str, max_length: Optional[int] = None) -> str:
         cleaned = truncate_text(cleaned, max_length)
     
     return cleaned
+
+
+def make_safe_filename(text: str, max_length: int = 200) -> str:
+    """
+    Convert arbitrary text to a filesystem-safe filename for Windows/macOS/Linux.
+
+    - Removes/replace reserved characters: <>:"/\\|?* and control chars
+    - Collapses whitespace to single spaces
+    - Strips trailing dots/spaces (Windows restriction)
+    - Truncates to max_length
+    """
+    if not text:
+        return "untitled"
+
+    # Remove ANSI (reuse cleaner for safety), then strip
+    cleaned = clean_ansi_codes(text).strip()
+
+    # Replace reserved characters with underscore
+    cleaned = re.sub(r'[<>:\\"/\\|\?\*]', '_', cleaned)
+
+    # Remove remaining control characters
+    cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned)
+
+    # Collapse whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+
+    # Trim
+    cleaned = cleaned.strip(' .')
+
+    if not cleaned:
+        cleaned = "untitled"
+
+    # Truncate to max length
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip()
+
+    return cleaned
