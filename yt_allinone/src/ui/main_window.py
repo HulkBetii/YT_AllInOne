@@ -336,7 +336,8 @@ class MainWindow(QMainWindow):
         # Safe mode + User-Agent
         self.chk_safe = QCheckBox("Chế độ an toàn (giảm 429)")
         self.chk_safe.setToolTip("Tăng retries/backoff và nghỉ giữa các request")
-        self.ua_edit = QLineEdit()
+        self.chk_safe.setChecked(True)  # Mặc định tích chọn
+        self.ua_edit = QLineEdit("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0")
         self.ua_edit.setPlaceholderText("User-Agent (tuỳ chọn)")
 
         # Row labels for i18n
@@ -618,6 +619,9 @@ class MainWindow(QMainWindow):
         self.chk_subs.setChecked(self.settings.value("optSubs", False, type=bool))
         self.chk_tags.setChecked(self.settings.value("optTags", False, type=bool))
         self.chk_audio.setChecked(self.settings.value("optAudioOnly", False, type=bool))
+        # Load safe mode và user agent settings (mặc định đã được set ở trên)
+        self.chk_safe.setChecked(self.settings.value("optSafe", True, type=bool))
+        self.ua_edit.setText(self.settings.value("optUserAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0", type=str))
         self._sync_quality_enable()
 
     def _save_settings(self) -> None:
@@ -632,6 +636,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("optSubs", opts["subtitles"])
         self.settings.setValue("optTags", opts["tags"])
         self.settings.setValue("optAudioOnly", opts["audioOnly"])
+        self.settings.setValue("optSafe", self.chk_safe.isChecked())
+        self.settings.setValue("optUserAgent", self.ua_edit.text())
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         try:
