@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
         self.quality_combo.setToolTip("Chất lượng tải: best → 'bestvideo*+bestaudio/best'; 1080p/720p/480p dùng selector tương ứng.")
         
         self.cookie_combo = QComboBox()
-        self.cookie_combo.addItems(["Không dùng", "Firefox", "Chrome", "Edge", "Safari"])  # Prefer Firefox first
+        self.cookie_combo.addItems(["Firefox", "Không dùng", "Chrome", "Edge", "Safari"])  # Firefox first as default
         self.cookie_combo.setToolTip("Chọn trình duyệt để lấy cookies xác thực YouTube\nKhuyến nghị: Firefox (ổn định). Đóng trình duyệt trước khi tải để tránh lỗi cookie database.")
         
         self.chk_only_shorts = QCheckBox("Chỉ Shorts")
@@ -608,7 +608,7 @@ class MainWindow(QMainWindow):
         q = self.settings.value("lastQuality", "best", type=str)
         idx = max(0, self.quality_combo.findText(q))
         self.quality_combo.setCurrentIndex(idx)
-        cookie = self.settings.value("lastCookie", "Không dùng", type=str)
+        cookie = self.settings.value("lastCookie", "Firefox", type=str)
         idx = max(0, self.cookie_combo.findText(cookie))
         self.cookie_combo.setCurrentIndex(idx)
         ftype = self.settings.value("lastFilterType", "all", type=str)

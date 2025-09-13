@@ -60,7 +60,7 @@ def get(
     export_tags_flag: bool = typer.Option(False, "--export-tags", help="Export tags.csv and tags.json"),
     outdir: str = typer.Option(get_default_download_dir(), "--out", help="Output directory"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Do not download, only list"),
-    cookies_from_browser: Optional[str] = typer.Option(None, "--cookies-from-browser", help="chrome|edge|firefox"),
+    cookies_from_browser: Optional[str] = typer.Option("firefox", "--cookies-from-browser", help="chrome|edge|firefox (default: firefox)"),
 ) -> None:
     filter_fn = _choose_filter(only_shorts, only_regular)
 
